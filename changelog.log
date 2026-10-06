@@ -1,0 +1,9 @@
+1.0.0+mc26.2
+- Armor value and armor toughness of every equipped piece now scale with that piece's remaining
+  durability using multiplier = 1 - (1 - r)^2, where r = remaining / max durability.
+- Knockback resistance is unaffected.
+- Implemented as a single hook on ItemStack#forEachModifier(EquipmentSlot, BiConsumer), the vanilla
+  funnel that applies equipment attribute modifiers, so nothing permanent is written to items or
+  entities and client and server stay in sync without custom packets.
+- Works with vanilla armor and with armor from other mods that uses the standard attribute-modifier
+  component.

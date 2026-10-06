@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "durability_armor_test",
+  "version": "1.0.0",
+  "name": "Durability Armor Integration Tests",
+  "environment": "server",
+  "mixins": ["durability_armor_test.mixins.json"]
+}

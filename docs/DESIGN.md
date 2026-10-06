@@ -71,8 +71,15 @@ Why this is the right funnel (and why the alternatives were rejected):
 * It touches no item component and no "base attribute": `AttributeModifier`s are immutable and we
   only build scaled copies for the transient modifier application. Nothing persists.
 * The id is unchanged, and vanilla removes-then-adds by id, so double stacking is impossible.
-* It is a pure function of the (synced) `ItemStack`, so client and server compute identical values
-  with no packets of our own — no desync by construction.
+* The value is computed **on the server only** (vanilla gates `detectEquipmentUpdates()` behind
+  `!level().isClientSide()` inside `LivingEntity.tick`), and it reaches the client through vanilla's
+  own `ClientboundUpdateAttributesPacket`: `AttributeInstance.setDirty` → `AttributeMap.onAttributeModified`
+  → `ServerEntity.sendDirtyEntityData` → packet. The snapshot is built from
+  `AttributeInstance.getModifiers()` — i.e. it carries our scaled *transient* equipment modifiers —
+  and the client handles it as a full replacement (`setBaseValue` + `removeModifiers()` + re-add), so
+  it can neither diverge nor accumulate. The mod therefore needs no packets of its own, and there is
+  no desync by construction. (Earlier revisions of this document wrongly said "client and server
+  compute identical values"; the client does not run the funnel at all.)
 * Rejected: adding our own permanent/transient modifier (state to remove on unequip, NBT and
   re-entry anomalies, double stacking risk); hooking `getArmorValue()`/`getAttributeValue()`
   (misses other mods and `getAttribute(..).getValue()`); data-driven component editing (permanent).
@@ -105,7 +112,22 @@ public static boolean scalesAttribute(Holder<Attribute> attribute);
 
 /** Convenience: scales a modifier amount when the stack wears the attribute, else returns the input. */
 public static AttributeModifier scale(ItemStack stack, Holder<Attribute> attribute, AttributeModifier modifier);
+
+/**
+ * Wraps a (attribute, modifier) consumer so every modifier it receives is first passed through
+ * scale(stack, ...). Returns the ORIGINAL consumer when multiplier(stack) == 1.0, and null for a
+ * null consumer. Pure and stateless; no idempotency marker (idempotence comes from injecting into
+ * the two dispatch calls, see §3 and the ItemStackMixin javadoc).
+ */
+public static BiConsumer<Holder<Attribute>, AttributeModifier> wrap(
+        ItemStack stack, BiConsumer<Holder<Attribute>, AttributeModifier> consumer);
 ```
+
+Revision note (post-P1-1): the mixin no longer replaces the method parameter. It now uses two
+`@ModifyArg` handlers on the dispatch calls inside the method body — `ItemAttributeModifiers.forEach`
+(index 1) and `EnchantmentHelper.forEachModifier` (index 2; Mixin's index is descriptor-based and does
+not count the receiver). This makes elytraslot 3.0.0's HEAD-cancel + re-entry scale exactly once in
+either injector order. See `docs/compat-audit.md` addendum A for the independent verification.
 
 `multiplier` must be a pure function (no caching, no side effects) and must return `1.0` when the
 stack is empty, has no `MAX_DAMAGE` component, is unbreakable, or has `maxDamage <= 0`.
@@ -149,3 +171,15 @@ authoritative build; teammates must coordinate (see the shared task board) befor
 * Armor points/toughness granted by a source that does not go through
   `ItemStack.forEachModifier` (e.g. a mod that injects straight into an `AttributeInstance`) are not
   scaled. Nothing else in the standard pipeline is missed.
+* `scale` multiplies the modifier `amount` regardless of `AttributeModifier.Operation`. All vanilla
+  armor uses `ADD_VALUE`, for which amount-scaling *is* contribution-scaling. A modded armor piece
+  using `ADD_MULTIPLIED_BASE`/`ADD_MULTIPLIED_TOTAL` on `minecraft:armor` would get "the modifier
+  amount scaled", which is the reasonable reading but not literally "the piece's final contribution
+  × multiplier".
+* `multiplier` uses an exact `== 1.0` comparison. `1 - (1-r)^2` rounds to exactly `1.0` when
+  `(1-r)^2 < 2^-53`, i.e. `maxDamage > ~9.5e7` with a single point of damage; the skipped correction
+  is < 1.2e-16 relative. Irrelevant in practice, deliberately not special-cased.
+* `compatibilityLevel` is `JAVA_25` (house style in this workspace; the reference mod ships the same).
+  Mixin 0.8.7 clamps it to its own maximum and logs
+  `Compatibility level JAVA_25 ... higher than the maximum level supported by this version of mixin (JAVA_13)`.
+  The mod loads and applies correctly; the warning is expected in every log.
