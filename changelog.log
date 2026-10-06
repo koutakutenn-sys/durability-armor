@@ -2,6 +2,11 @@
 - Armor value and armor toughness of every equipped piece now scale with that piece's remaining
   durability using multiplier = 1 - (1 - r)^2, where r = remaining / max durability.
 - Knockback resistance is unaffected.
+- Additive attribute modifiers (ADD_VALUE, ADD_MULTIPLIED_BASE) are scaled; ADD_MULTIPLIED_TOTAL
+  modifiers are left unchanged, so a piece's final contribution is exactly `original value ×
+  multiplier` for the vanilla `(base + Σ add) · (1 + Σ total)` formula.
+- Unbreakable items get no exemption: they use the same remaining/max durability ratio as any other
+  stack (ordinary unbreakable gear carries no damage, so its multiplier is 1).
 - Implemented as a single hook on ItemStack#forEachModifier(EquipmentSlot, BiConsumer), the vanilla
   funnel that applies equipment attribute modifiers, so nothing permanent is written to items or
   entities and client and server stay in sync without custom packets.

@@ -130,8 +130,13 @@ not count the receiver). This makes elytraslot 3.0.0's HEAD-cancel + re-entry sc
 either injector order. See `docs/compat-audit.md` addendum A for the independent verification.
 
 `multiplier` must be a pure function (no caching, no side effects) and must return `1.0` when the
-stack is empty, has no `MAX_DAMAGE` component, is unbreakable, or has `maxDamage <= 0`.
+stack is empty, has no `MAX_DAMAGE` component, or has `maxDamage <= 0`.
 A broken stack (remaining `<= 0`) yields `0.0`.
+`UNBREAKABLE` is **not** an exemption: `ItemStack.getDamageValue()` still reports the DAMAGE
+component of an unbreakable stack, so the multiplier is computed from MAX_DAMAGE + DAMAGE exactly as
+for any other stack (ordinary unbreakable gear has damage 0 and therefore still yields `1.0`).
+This was a Codex final-acceptance finding — the requirement `r = remaining/max durability` has no
+unbreakable exemption.
 
 Invalid input must never throw: `multiplier(null)` returns `1.0`.
 
@@ -171,11 +176,16 @@ authoritative build; teammates must coordinate (see the shared task board) befor
 * Armor points/toughness granted by a source that does not go through
   `ItemStack.forEachModifier` (e.g. a mod that injects straight into an `AttributeInstance`) are not
   scaled. Nothing else in the standard pipeline is missed.
-* `scale` multiplies the modifier `amount` regardless of `AttributeModifier.Operation`. All vanilla
-  armor uses `ADD_VALUE`, for which amount-scaling *is* contribution-scaling. A modded armor piece
-  using `ADD_MULTIPLIED_BASE`/`ADD_MULTIPLIED_TOTAL` on `minecraft:armor` would get "the modifier
-  amount scaled", which is the reasonable reading but not literally "the piece's final contribution
-  × multiplier".
+* `scale` keeps `ADD_MULTIPLIED_TOTAL` modifiers **unchanged** and only scales the `amount` of
+  `ADD_VALUE` / `ADD_MULTIPLIED_BASE` modifiers. Vanilla `AttributeInstance.calculateValue` computes
+  `value = (base + Σ ADD_VALUE + base·Σ ADD_MULTIPLIED_BASE) · (1 + Σ ADD_MULTIPLIED_TOTAL)` and
+  ARMOR/ARMOR_TOUGHNESS have base 0 on vanilla entities, so preserving the multiplicative total while
+  scaling the additive contribution is exactly what makes the final value equal
+  `original value × multiplier` for a piece (Codex finding P1-2: `+8 ADD_VALUE` and
+  `+0.5 ADD_MULTIPLIED_TOTAL` at m=0.75 must give `(8·0.75)·1.5 = 9.0`, not `8.25`).
+  Residual limitation: an `ADD_MULTIPLIED_TOTAL` contribution is a global factor rather than a
+  contribution owned by one piece, so it stays at full strength; attribute **base** values are never
+  scaled either (armor points injected by mods directly into an `AttributeInstance` are out of scope).
 * `multiplier` uses an exact `== 1.0` comparison. `1 - (1-r)^2` rounds to exactly `1.0` when
   `(1-r)^2 < 2^-53`, i.e. `maxDamage > ~9.5e7` with a single point of damage; the skipped correction
   is < 1.2e-16 relative. Irrelevant in practice, deliberately not special-cased.

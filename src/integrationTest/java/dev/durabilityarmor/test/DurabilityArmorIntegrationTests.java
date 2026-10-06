@@ -4,9 +4,14 @@ import dev.durabilityarmor.ArmorDurabilityScaling;
 import dev.durabilityarmor.DurabilityArmor;
 
 import net.minecraft.core.Holder;
+import net.minecraft.core.HolderSet;
+import net.minecraft.core.component.DataComponentMap;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.ProblemReporter;
@@ -25,6 +30,11 @@ import net.minecraft.world.entity.monster.zombie.Zombie;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.ItemAttributeModifiers;
+import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
+import net.minecraft.world.item.enchantment.ItemEnchantments;
+import net.minecraft.world.item.enchantment.LevelBasedValue;
+import net.minecraft.world.item.enchantment.effects.EnchantmentAttributeEffect;
 import net.minecraft.world.level.ItemLike;
 import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.storage.TagValueOutput;
@@ -74,6 +84,11 @@ public final class DurabilityArmorIntegrationTests {
     /** Compiled rearm-shape probe class (G1). */
     private static final String PROBE_MIXIN_CLASS =
             "dev/durabilityarmor/test/mixin/RearmStyleReceiverProbeMixin.class";
+    /**
+     * ARMOR amount granted by {@code data/da_test/enchantment/armor_probe.json} (GAP-A). Kept here as
+     * the single source of truth next to the datapack file it mirrors.
+     */
+    private static final double ENCHANT_ARMOR_AMOUNT = 1.5;
 
     private static int checks;
     private static final List<String> FAILURES = new ArrayList<>();
@@ -97,6 +112,8 @@ public final class DurabilityArmorIntegrationTests {
             section("G2 group overload stays raw", DurabilityArmorIntegrationTests::groupOverloadChecks);
             section("G3 Holder.value fallback", DurabilityArmorIntegrationTests::holderFallbackChecks);
             section("G4 id based removal", () -> idRemovalChecks(server.overworld()));
+            section("P1-2 operation aware scaling", () -> operationAwareScalingChecks(server.overworld()));
+            section("GAP-A enchantment dispatch", () -> enchantmentDispatchChecks(server.overworld()));
         } catch (Throwable fatal) {
             FAILURES.add("fatal: " + fatal);
             REPORT.append("FAILED fatal: ").append(fatal).append('\n');
@@ -193,8 +210,25 @@ public final class DurabilityArmorIntegrationTests {
         unbreakable.set(DataComponents.UNBREAKABLE, Unit.INSTANCE);
         unbreakable.setDamageValue(max / 2);
         require(remainingRatio(unbreakable) == 0.5, "A22 fixture: unbreakable stack is at r=0.5");
-        require(ArmorDurabilityScaling.multiplier(unbreakable) == 1.0,
-                "A23 unbreakable stack is never scaled");
+        // CORRECTED for the frozen P1-1 semantics (UNBREAKABLE short-circuit removed). The requirement
+        // is literally r = remaining durability / max durability with no exemption, so an unbreakable
+        // stack that still carries a DAMAGE component must scale like any other. This replaces the
+        // previous "unbreakable -> 1.0" assertion, which pinned exactly the behaviour Codex rejected
+        // ("a passing test cannot prove the user requirement"). Deliberate correction, not a weakening.
+        require(near(ArmorDurabilityScaling.multiplier(unbreakable), closedForm(0.5)),
+                "A23 CORRECTED (P1-1): unbreakable + damage scales by the formula (r=0.5 -> 0.75), no exemption");
+
+        ItemStack unbreakablePristine = new ItemStack(Items.DIAMOND_CHESTPLATE);
+        unbreakablePristine.set(DataComponents.UNBREAKABLE, Unit.INSTANCE);
+        require(ArmorDurabilityScaling.multiplier(unbreakablePristine) == 1.0,
+                "A23a unbreakable at damage 0 is still 1.0 (r=1; the removed short-circuit was redundant there)");
+
+        ItemStack unbreakableBroken = new ItemStack(Items.DIAMOND_CHESTPLATE);
+        unbreakableBroken.set(DataComponents.UNBREAKABLE, Unit.INSTANCE);
+        unbreakableBroken.setDamageValue(unbreakableBroken.getMaxDamage());
+        require(ArmorDurabilityScaling.multiplier(unbreakableBroken) == 0.0,
+                "A23b CORRECTED (P1-1): unbreakable with remaining durability 0 is 0.0"
+                        + " (the removed short-circuit used to force 1.0 here)");
 
         ItemStack zeroMax = new ItemStack(Items.STICK);
         zeroMax.set(DataComponents.MAX_DAMAGE, 0);
@@ -890,20 +924,29 @@ public final class DurabilityArmorIntegrationTests {
         require(!near(brokenEquip.stand().getAttributeValue(Attributes.ARMOR), brokenBase + brokenRaw + intactRaw),
                 "R5b the broken piece is really skipped");
 
-        // (c) UNBREAKABLE with a damage component present
+        // (c) UNBREAKABLE with a damage component present - CORRECTED for the frozen P1-1 semantics:
+        // the UNBREAKABLE short-circuit is gone, so there is no exemption and the contribution is
+        // raw * multiplier. The old pair of assertions here pinned the rejected behaviour.
         ItemStack unbreakable = new ItemStack(Items.DIAMOND_HELMET);
         unbreakable.set(DataComponents.UNBREAKABLE, Unit.INSTANCE);
         unbreakable.setDamageValue(unbreakable.getMaxDamage() / 2);
         require(unbreakable.has(DataComponents.UNBREAKABLE) && unbreakable.getDamageValue() > 0,
                 "R5c fixture: unbreakable stack carrying a damage component");
-        require(ArmorDurabilityScaling.multiplier(unbreakable) == 1.0, "R5c the unbreakable multiplier is 1.0");
+        double unbreakableMultiplier = ArmorDurabilityScaling.multiplier(unbreakable);
+        require(near(unbreakableMultiplier, closedForm(remainingRatio(unbreakable))) && unbreakableMultiplier < 1.0,
+                "R5c CORRECTED (P1-1): the damaged unbreakable multiplier follows the formula ("
+                        + unbreakableMultiplier + " < 1)");
         double unbreakableRaw = raw(unbreakable, EquipmentSlot.HEAD, Attributes.ARMOR).addValue();
         List<Piece> unbreakablePieces = List.of(new Piece(EquipmentSlot.HEAD, unbreakable));
         Equipped unbreakableEquip = spawn(level, unbreakablePieces);
         unbreakableEquip.stand().tick();
         require(near(unbreakableEquip.stand().getAttributeValue(Attributes.ARMOR),
+                        unbreakableEquip.stand().getAttributeBaseValue(Attributes.ARMOR)
+                                + unbreakableRaw * unbreakableMultiplier),
+                "R5c CORRECTED (P1-1): the damaged unbreakable piece contributes raw * multiplier");
+        require(!near(unbreakableEquip.stand().getAttributeValue(Attributes.ARMOR),
                         unbreakableEquip.stand().getAttributeBaseValue(Attributes.ARMOR) + unbreakableRaw),
-                "R5c the unbreakable stack keeps its full raw contribution");
+                "R5c CORRECTED (P1-1): the old 'full raw contribution' expectation no longer holds");
 
         // (d) no MAX_DAMAGE component at all
         ItemStack noMaxDamage = new ItemStack(Items.STICK);
@@ -1148,9 +1191,14 @@ public final class DurabilityArmorIntegrationTests {
     /**
      * Pins the invariant that keeps removal safe: vanilla removes equipment modifiers <b>by id</b>
      * ({@code LivingEntity.stopLocationBasedEffects} -> {@code removeModifier(id)}), so the scaled
-     * amount must be irrelevant. Non-vacuity: the fixture first installs a same-id modifier with a
-     * deliberately different amount and asserts it really took effect, so an amount- or
-     * identity-based removal would leave the modifier behind and fail.
+     * amount, the operation and even the object identity must be irrelevant.
+     *
+     * <p>Non-vacuity (this is the Codex P2-2 fix): the old version removed the very same instance it
+     * had installed, so it would also have passed if removal matched by value or identity. Now the
+     * installed modifier is {@code (id, 6, ADD_VALUE)} and the modifier handed to
+     * {@code removeModifier} is a <em>newly constructed</em> {@code (same id, 123,
+     * ADD_MULTIPLIED_TOTAL)} instance - different amount, different operation, different object - and
+     * the installed one must still disappear.</p>
      */
     private static void idRemovalChecks(ServerLevel level) {
         ItemStack chest = damaged(Items.DIAMOND_CHESTPLATE, 0.5);
@@ -1168,17 +1216,29 @@ public final class DurabilityArmorIntegrationTests {
         require(near(installed.amount(), expected.get(id)), "G4 fixture: the installed amount is raw * m");
         require(instance.getModifiers().size() == 1, "G4 fixture: exactly one modifier before the conflicting instance");
 
-        double conflicting = installed.amount() + 123.0;
-        instance.addOrUpdateTransientModifier(new AttributeModifier(id, conflicting, installed.operation()));
+        // Reproduce exactly the shape the mixin produces for this piece: (id, 6, ADD_VALUE).
+        double installedAmount = expected.get(id);
+        require(near(installedAmount, 6.0),
+                "G4 fixture: the scenario is (id, 6, ADD_VALUE) as specified (" + installedAmount + ")");
+        instance.addOrUpdateTransientModifier(new AttributeModifier(id, installedAmount,
+                AttributeModifier.Operation.ADD_VALUE));
         require(instance.getModifiers().size() == 1,
                 "G4 a same-id instance replaces rather than duplicates (one modifier per id)");
-        AttributeModifier sameIdDifferentAmount = instance.getModifier(id);
-        require(sameIdDifferentAmount != null && near(sameIdDifferentAmount.amount(), conflicting),
-                "G4 fixture: the conflicting amount is really installed, so the removal check is not vacuous");
+        AttributeModifier present = instance.getModifier(id);
+        require(present != null && near(present.amount(), installedAmount)
+                        && present.operation() == AttributeModifier.Operation.ADD_VALUE,
+                "G4 fixture: the installed modifier really is (id, 6, ADD_VALUE)");
 
-        instance.removeModifier(sameIdDifferentAmount);
+        // A NEW instance: same id, different amount AND different operation. Only id matching can
+        // explain the installed modifier being removed by this call.
+        AttributeModifier removalProbe = new AttributeModifier(id, 123.0,
+                AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL);
+        require(!removalProbe.equals(present),
+                "G4 fixture: the removal probe differs from the installed modifier in amount and operation");
+        instance.removeModifier(removalProbe);
         require(instance.getModifier(id) == null,
-                "G4 removing by id deletes the modifier even though its amount differed from raw * m");
+                "G4 removing a newly constructed same-id instance (different amount and operation) still"
+                        + " deletes the installed modifier => removal is by id, not by value or identity");
         require(instance.getModifiers().isEmpty(), "G4 no orphan modifier is left behind");
         require(near(stand.getAttributeValue(Attributes.ARMOR), stand.getAttributeBaseValue(Attributes.ARMOR)),
                 "G4 the ARMOR value returns to the base value after the id removal");
@@ -1190,6 +1250,219 @@ public final class DurabilityArmorIntegrationTests {
         require(instance.getModifiers().size() == 1, "G4 the equipment-change tick restores exactly one modifier id");
         require(instance.getModifier(id) != null && near(instance.getModifier(id).amount(), expectedAfter),
                 "G4 the restored modifier amount is raw * m again");
+    }
+
+    // ------------------------------------------------------------------ P1-2 operation aware scaling
+
+    /**
+     * Frozen P1-2 semantics: {@code scale()} leaves {@code ADD_MULTIPLIED_TOTAL} modifiers untouched
+     * (same instance, same amount) and only scales {@code ADD_VALUE} / {@code ADD_MULTIPLIED_BASE}
+     * amounts, so a piece's net contribution is still {@code originalValue * multiplier}.
+     *
+     * <p>Non-vacuity: the live entity value is asserted against the exact expected 9.0 <em>and</em>
+     * against three distinct wrong outcomes - 8.25 (the old behaviour that also scaled the
+     * multiplicative factor), 6.0 (the factor dropped) and 12.0 (the additive part left unscaled) -
+     * and the {@code scale()} contract is pinned with reference identity, which a copy would fail.</p>
+     */
+    private static void operationAwareScalingChecks(ServerLevel level) {
+        ItemStack chest = damaged(Items.DIAMOND_CHESTPLATE, 0.5);
+        double multiplier = ArmorDurabilityScaling.multiplier(chest);
+        require(multiplier > 0.0 && multiplier < 1.0, "P1-2 fixture: damaged chestplate multiplier in (0,1)");
+
+        Identifier armorTotalId = Identifier.fromNamespaceAndPath(TEST_NAMESPACE, "armor_add_multiplied_total");
+        Identifier toughnessTotalId = Identifier.fromNamespaceAndPath(TEST_NAMESPACE, "toughness_add_multiplied_total");
+        AttributeModifier armorTotal = new AttributeModifier(armorTotalId, 0.5,
+                AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL);
+        AttributeModifier toughnessTotal = new AttributeModifier(toughnessTotalId, 0.5,
+                AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL);
+
+        ItemAttributeModifiers base = chest.getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS,
+                ItemAttributeModifiers.EMPTY);
+        AttributeModifier componentArmor = null;
+        for (ItemAttributeModifiers.Entry entry : base.modifiers()) {
+            if (sameAttribute(entry.attribute(), Attributes.ARMOR)) {
+                componentArmor = entry.modifier();
+            }
+        }
+        require(componentArmor != null && near(componentArmor.amount(), 8.0)
+                        && componentArmor.operation() == AttributeModifier.Operation.ADD_VALUE,
+                "P1-2 fixture: the chestplate's own ARMOR entry is +8 ADD_VALUE");
+
+        ItemAttributeModifiers.Builder builder = ItemAttributeModifiers.builder();
+        base.modifiers().forEach(entry -> builder.add(entry.attribute(), entry.modifier(), entry.slot()));
+        builder.add(Attributes.ARMOR, armorTotal, EquipmentSlotGroup.CHEST);
+        builder.add(Attributes.ARMOR_TOUGHNESS, toughnessTotal, EquipmentSlotGroup.CHEST);
+        chest.set(DataComponents.ATTRIBUTE_MODIFIERS, builder.build());
+
+        double rawArmor = raw(chest, EquipmentSlot.CHEST, Attributes.ARMOR).addValue();
+        double rawToughness = raw(chest, EquipmentSlot.CHEST, Attributes.ARMOR_TOUGHNESS).addValue();
+        require(near(rawArmor, 8.0) && near(rawToughness, 2.0),
+                "P1-2 fixture: +8 ARMOR and +2 ARMOR_TOUGHNESS are the additive parts");
+
+        AttributeModifier scaledTotal = ArmorDurabilityScaling.scale(chest, Attributes.ARMOR, armorTotal);
+        require(scaledTotal == armorTotal,
+                "P1-2 scale() returns the ADD_MULTIPLIED_TOTAL modifier itself (same instance, untouched)");
+        require(scaledTotal.amount() == 0.5
+                        && scaledTotal.operation() == AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL,
+                "P1-2 the ADD_MULTIPLIED_TOTAL amount and operation are unchanged");
+        AttributeModifier scaledAdd = ArmorDurabilityScaling.scale(chest, Attributes.ARMOR, componentArmor);
+        require(scaledAdd != componentArmor && near(scaledAdd.amount(), 8.0 * multiplier)
+                        && scaledAdd.operation() == AttributeModifier.Operation.ADD_VALUE,
+                "P1-2 the ADD_VALUE modifier is scaled into a new instance with the same operation");
+
+        Map<Identifier, Double> funnel = amountsFor(chest, EquipmentSlot.CHEST, Attributes.ARMOR);
+        require(funnel.containsKey(armorTotalId) && funnel.get(armorTotalId) == 0.5,
+                "P1-2 the funnel hands the ADD_MULTIPLIED_TOTAL modifier through at full strength");
+        require(near(funnel.getOrDefault(componentArmor.id(), Double.NaN), 8.0 * multiplier),
+                "P1-2 the funnel hands the ADD_VALUE modifier through scaled");
+
+        Equipped equipped = spawn(level, List.of(new Piece(EquipmentSlot.CHEST, chest)));
+        TestArmorStand stand = equipped.stand();
+        stand.tick();
+        double observed = stand.getAttributeValue(Attributes.ARMOR);
+        double expectedValue = rawArmor * multiplier * 1.5;
+        require(near(observed, expectedValue),
+                "P1-2 live ARMOR == " + expectedValue + " ((8 * 0.75) * 1.5)");
+        require(near(observed, 9.0), "P1-2 live ARMOR is exactly 9.0");
+        require(!near(observed, 8.25),
+                "P1-2 live ARMOR is NOT 8.25 (the old double-scaled ADD_MULTIPLIED_TOTAL result)");
+        require(!near(observed, 6.0),
+                "P1-2 live ARMOR is NOT 6.0 (the multiplicative total must still apply)");
+        require(!near(observed, 12.0), "P1-2 live ARMOR is NOT 12.0 (the ADD_VALUE part must be scaled)");
+        require(stand.getArmorValue() == 9, "P1-2 the armor bar is floor(9.0) == 9");
+
+        AttributeInstance instance = stand.getAttribute(Attributes.ARMOR);
+        AttributeModifier installedTotal = instance.getModifier(armorTotalId);
+        require(installedTotal != null && installedTotal.amount() == 0.5
+                        && installedTotal.operation() == AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL,
+                "P1-2 the installed ADD_MULTIPLIED_TOTAL modifier is on the entity at full strength");
+        AttributeModifier installedAdd = instance.getModifier(componentArmor.id());
+        require(installedAdd != null && near(installedAdd.amount(), 8.0 * multiplier),
+                "P1-2 the installed ADD_VALUE modifier is scaled");
+
+        double observedToughness = stand.getAttributeValue(Attributes.ARMOR_TOUGHNESS);
+        require(near(observedToughness, rawToughness * multiplier * 1.5) && near(observedToughness, 2.25),
+                "P1-2 live ARMOR_TOUGHNESS == 2.25 ((2 * 0.75) * 1.5)");
+        require(!near(observedToughness, 2.0 * multiplier * 1.375),
+                "P1-2 ARMOR_TOUGHNESS is NOT 2.0625 (double-scaled multiplicative factor)");
+        require(!near(observedToughness, 2.0 * multiplier),
+                "P1-2 ARMOR_TOUGHNESS is NOT 1.5 (multiplicative factor dropped)");
+    }
+
+    // ------------------------------------------------------------------ GAP-A enchantment dispatch
+
+    /**
+     * Closes the Codex P2-1 gap: disabling only the {@code EnchantmentHelper} {@code @ModifyArg} used
+     * to leave the whole suite green, because no test produced a non-empty enchantment attribute
+     * contribution.
+     *
+     * <p>The probe enchantment grants {@code minecraft:armor +1.5 add_value}. It is taken from the
+     * mod datapack ({@code data/da_test/enchantment/armor_probe.json}) when that entry is registered;
+     * this dev harness does not load mod datapacks into the ENCHANTMENT registry, so the same
+     * enchantment is otherwise built in code and wrapped in {@code Holder.direct} - the funnel path
+     * under test is identical either way
+     * ({@code ItemStack.forEachModifier -> EnchantmentHelper.forEachModifier -> the enchantment's
+     * ATTRIBUTES effect}), and the check name records which source was used.</p>
+     *
+     * <p>The raw amount is read from an undamaged twin of the same stack (multiplier 1, so the funnel
+     * path is identity) and is additionally pinned to the datapack constant, and the enchantment
+     * modifier id is discovered by diffing the funnel id sets rather than guessed.</p>
+     */
+    private static void enchantmentDispatchChecks(ServerLevel level) {
+        Holder.Reference<Enchantment> registered = level.registryAccess()
+                .lookupOrThrow(Registries.ENCHANTMENT)
+                .get(ResourceKey.create(Registries.ENCHANTMENT,
+                        Identifier.fromNamespaceAndPath(TEST_NAMESPACE, "armor_probe")))
+                .orElse(null);
+        Holder<Enchantment> probe = registered != null ? registered : syntheticArmorEnchantment();
+        String source = registered != null
+                ? "registered mod-datapack enchantment da_test:armor_probe"
+                : "code-built Holder.direct(Enchantment) (mod datapack not loaded in this harness)";
+        require(probe != null && probe.value() != null
+                        && !probe.value().getEffects(EnchantmentEffectComponents.ATTRIBUTES).isEmpty(),
+                "GAP-A fixture: the probe enchantment declares a non-empty ATTRIBUTES effect, source = " + source);
+        if (probe == null || probe.value() == null) {
+            return;
+        }
+
+        ItemStack enchanted = damaged(Items.DIAMOND_CHESTPLATE, 0.5);
+        ItemStack pristineEnchanted = new ItemStack(Items.DIAMOND_CHESTPLATE);
+        for (ItemStack stack : List.of(enchanted, pristineEnchanted)) {
+            ItemEnchantments.Mutable mutable = new ItemEnchantments.Mutable(ItemEnchantments.EMPTY);
+            mutable.set(probe, 1);
+            stack.set(DataComponents.ENCHANTMENTS, mutable.toImmutable());
+        }
+        require(!enchanted.getOrDefault(DataComponents.ENCHANTMENTS, ItemEnchantments.EMPTY).isEmpty(),
+                "GAP-A fixture: the stack really carries a non-empty ENCHANTMENTS component");
+        double multiplier = ArmorDurabilityScaling.multiplier(enchanted);
+        require(multiplier > 0.0 && multiplier < 1.0,
+                "GAP-A fixture: damaged enchanted chestplate multiplier in (0,1)");
+
+        Set<Identifier> plainIds = amountsFor(new ItemStack(Items.DIAMOND_CHESTPLATE), EquipmentSlot.CHEST,
+                Attributes.ARMOR).keySet();
+        Map<Identifier, Double> enchantedDamaged = amountsFor(enchanted, EquipmentSlot.CHEST, Attributes.ARMOR);
+        Set<Identifier> extra = new HashSet<>(enchantedDamaged.keySet());
+        extra.removeAll(plainIds);
+        require(extra.size() == 1,
+                "GAP-A fixture: the enchantment adds exactly one ARMOR modifier id (" + extra + ")");
+        if (extra.size() != 1) {
+            return;
+        }
+        Identifier enchantmentId = extra.iterator().next();
+
+        double rawEnchantment = amountsFor(pristineEnchanted, EquipmentSlot.CHEST, Attributes.ARMOR)
+                .getOrDefault(enchantmentId, Double.NaN);
+        require(near(rawEnchantment, ENCHANT_ARMOR_AMOUNT),
+                "GAP-A fixture: at multiplier 1 the enchantment delivers its raw " + ENCHANT_ARMOR_AMOUNT
+                        + " (the funnel path is identity, so this is a live raw oracle)");
+        double scaledEnchantment = enchantedDamaged.getOrDefault(enchantmentId, Double.NaN);
+        require(near(scaledEnchantment, rawEnchantment * multiplier),
+                "GAP-A the ENCHANTMENT ARMOR modifier from EnchantmentHelper.forEachModifier is scaled"
+                        + " exactly once (raw * m)");
+        require(!near(scaledEnchantment, rawEnchantment),
+                "GAP-A the enchantment ARMOR modifier is not left unscaled (this is the P2-1 gap)");
+        require(!near(scaledEnchantment, rawEnchantment * multiplier * multiplier),
+                "GAP-A the enchantment ARMOR modifier is not scaled twice");
+
+        double rawComponent = raw(enchanted, EquipmentSlot.CHEST, Attributes.ARMOR).addValue();
+        Equipped equipped = spawn(level, List.of(new Piece(EquipmentSlot.CHEST, enchanted)));
+        TestArmorStand stand = equipped.stand();
+        try {
+            stand.tick();
+            require(near(stand.getAttributeValue(Attributes.ARMOR),
+                            rawComponent * multiplier + rawEnchantment * multiplier),
+                    "GAP-A the enchantment's scaled ARMOR reaches the live entity attribute"
+                            + " (component + enchantment, each raw * m)");
+        } finally {
+            // The probe enchantment is a Holder.direct value that is absent from the ENCHANTMENT
+            // registry, so a stack carrying it cannot be serialized. Strip the gear and drop the stand
+            // before the server saves chunks, otherwise shutdown logs an element-encoding error that
+            // has nothing to do with the mod under test.
+            stand.setItemSlot(EquipmentSlot.CHEST, ItemStack.EMPTY);
+            stand.discard();
+        }
+    }
+
+    /**
+     * Code-built twin of {@code data/da_test/enchantment/armor_probe.json}: same attribute, amount and
+     * operation, so the enchantment dispatch is covered even when the harness does not load the mod
+     * datapack into the dynamic ENCHANTMENT registry.
+     */
+    private static Holder<Enchantment> syntheticArmorEnchantment() {
+        DataComponentMap effects = DataComponentMap.builder()
+                .set(EnchantmentEffectComponents.ATTRIBUTES, List.of(new EnchantmentAttributeEffect(
+                        Identifier.fromNamespaceAndPath(TEST_NAMESPACE, "enchantment.armor_probe"),
+                        Attributes.ARMOR,
+                        new LevelBasedValue.Constant((float) ENCHANT_ARMOR_AMOUNT),
+                        AttributeModifier.Operation.ADD_VALUE)))
+                .build();
+        Enchantment enchantment = new Enchantment(
+                Component.literal("da_test armor probe"),
+                Enchantment.definition(HolderSet.empty(), 1, 1,
+                        Enchantment.constantCost(1), Enchantment.constantCost(1), 1, EquipmentSlotGroup.ARMOR),
+                HolderSet.empty(),
+                effects);
+        return Holder.direct(enchantment);
     }
 
     // ------------------------------------------------------------------ helpers

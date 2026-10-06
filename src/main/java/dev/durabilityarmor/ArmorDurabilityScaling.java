@@ -33,9 +33,17 @@ public final class ArmorDurabilityScaling {
      * Durability factor for a single stack: {@code 1 - (1 - r)^2} with
      * {@code r = (maxDamage - damage) / maxDamage}.
      *
-     * <p>Returns {@code 1.0} (i.e. "no change") for {@code null}, empty, undamageable, unbreakable or
-     * {@code maxDamage <= 0} stacks, and for stacks that are at full (or above full) durability.
-     * Returns {@code 0.0} for a broken stack (remaining durability {@code <= 0}). Never throws.</p>
+     * <p>Returns {@code 1.0} (i.e. "no change") for {@code null}, empty, stacks without a
+     * {@code MAX_DAMAGE} component, stacks with {@code maxDamage <= 0}, and stacks at full (or above
+     * full) durability. Returns {@code 0.0} for a broken stack (remaining durability {@code <= 0}).
+     * Never throws.</p>
+     *
+     * <p>There is deliberately <em>no</em> {@code UNBREAKABLE} exemption. The requirement is literally
+     * {@code r = remaining durability / max durability}, and an unbreakable stack still carries its
+     * clamped {@code DAMAGE} component – {@code getDamageValue()} keeps returning it – so an item that
+     * was damaged before or after being made unbreakable must lose protection accordingly. The removed
+     * short-circuit only hid that case: ordinary unbreakable gear has {@code damage == 0}, which gives
+     * {@code remaining >= maxDamage} and therefore {@code 1.0} here anyway, so nothing changes for it.</p>
      */
     public static double multiplier(ItemStack stack) {
         if (stack == null || stack.isEmpty()) {
@@ -43,10 +51,6 @@ public final class ArmorDurabilityScaling {
         }
         // No MAX_DAMAGE component => the stack cannot wear out, so it is never scaled down.
         if (!stack.has(DataComponents.MAX_DAMAGE)) {
-            return 1.0;
-        }
-        // Unbreakable stacks never lose durability, so their protection must never drop.
-        if (stack.has(DataComponents.UNBREAKABLE)) {
             return 1.0;
         }
         int maxDamage = stack.getMaxDamage();
@@ -89,12 +93,35 @@ public final class ArmorDurabilityScaling {
     }
 
     /**
-     * Returns {@code modifier} unchanged when the attribute is not scaled or the stack is at full
-     * durability; otherwise returns a new {@link AttributeModifier} with the same id and operation
-     * and {@code amount * multiplier}.
+     * Scales a modifier amount for the stack's remaining durability.
+     *
+     * <p>Returns {@code modifier} unchanged when the attribute is not scaled, when the stack needs no
+     * scaling, or when the operation is
+     * {@link AttributeModifier.Operation#ADD_MULTIPLIED_TOTAL}. Otherwise returns a new
+     * {@link AttributeModifier} with the same id and operation and {@code amount * multiplier}.</p>
+     *
+     * <h2>Why {@code ADD_MULTIPLIED_TOTAL} is left untouched</h2>
+     * <p>Vanilla {@code AttributeInstance} calculates
+     * {@code value = (base + Σ ADD_VALUE + base·Σ ADD_MULTIPLIED_BASE) · (1 + Σ ADD_MULTIPLIED_TOTAL)},
+     * and {@code base} is 0 for {@link Attributes#ARMOR}/{@link Attributes#ARMOR_TOUGHNESS} on vanilla
+     * entities. Scaling only the additive contributions while leaving the multiplicative total at full
+     * strength therefore produces exactly {@code originalValue * multiplier} for a single piece: with
+     * {@code +8 ADD_VALUE} and {@code +0.5 ADD_MULTIPLIED_TOTAL} at {@code multiplier = 0.75},
+     * {@code (8 · 0.75) · 1.5 = 9.0 = 12 · 0.75}; scaling the total factor as well would wrongly give
+     * {@code 6 · 1.375 = 8.25}.</p>
+     *
+     * <p>Residual limitation: an {@code ADD_MULTIPLIED_TOTAL} contribution is a global factor over the
+     * whole attribute – it is not owned by one piece and multiplies every other source's contribution
+     * too – so it is deliberately kept at full strength. Likewise an attribute's own base value is
+     * never scaled by this mod.</p>
      */
     public static AttributeModifier scale(ItemStack stack, Holder<Attribute> attribute, AttributeModifier modifier) {
         if (modifier == null || !scalesAttribute(attribute)) {
+            return modifier;
+        }
+        if (modifier.operation() == AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL) {
+            // A global multiplicative factor: keep it whole, so the net value is
+            // (scaled additive contribution) * factor == originalValue * multiplier.
             return modifier;
         }
         double multiplier = multiplier(stack);
@@ -112,10 +139,10 @@ public final class ArmorDurabilityScaling {
      * {@code EnchantmentHelper} dispatch).
      *
      * <p>Pure and stateless: the returned consumer holds nothing but {@code stack} and
-     * {@code consumer}. When the stack needs no scaling ({@code null}, empty, undamageable,
-     * unbreakable, full durability – i.e. {@code multiplier(stack) == 1.0}) the <em>original</em>
-     * consumer is returned untouched, so the common case allocates nothing and behaves exactly like
-     * vanilla.</p>
+     * {@code consumer}. When the stack needs no scaling ({@code null}, empty, no {@code MAX_DAMAGE},
+     * {@code maxDamage <= 0}, or full/above-full durability – i.e. {@code multiplier(stack) == 1.0})
+     * the <em>original</em> consumer is returned untouched, so the common case allocates nothing and
+     * behaves exactly like vanilla.</p>
      *
      * <p>Note that this wrapper is intentionally not idempotent-detecting: it scales whatever it is
      * handed. Idempotence comes from the injector being attached to the two dispatch calls inside the

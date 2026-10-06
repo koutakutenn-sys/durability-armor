@@ -22,7 +22,12 @@ Knockback resistance is deliberately **not** affected.
 The mod never edits items. It hooks the single vanilla code path that pushes equipment attribute
 modifiers into an entity's attribute map
 (`ItemStack#forEachModifier(EquipmentSlot, BiConsumer)`, used by `LivingEntity#collectEquipmentChanges`)
-and scales the `minecraft:armor` / `minecraft:armor_toughness` amounts on the fly.
+and scales the `minecraft:armor` / `minecraft:armor_toughness` amounts on the fly: additive
+modifiers (`ADD_VALUE`, `ADD_MULTIPLIED_BASE`) are scaled, while `ADD_MULTIPLIED_TOTAL` modifiers are
+left alone — that is what makes the piece's *final* contribution equal `original value × multiplier`
+(vanilla computes `(base + Σ add) · (1 + Σ total)`). No durability exemption is made for
+`unbreakable` items either: they are treated like any other stack, and since they normally carry no
+damage their multiplier is simply 1.
 
 Because of that:
 
@@ -55,7 +60,10 @@ Damage reduction, the HUD armor bar and anything else that reads `Attributes.ARM
 * Item tooltips keep printing the item's own attribute values (they are unchanged by design). The
   HUD armor bar and the actual damage reduction are the scaled ones.
 * Armor points injected directly into an `AttributeInstance` by another mod, bypassing the standard
-  item attribute component, are not scaled.
+  item attribute component, are not scaled. Likewise an attribute's **base value** and any
+  `ADD_MULTIPLIED_TOTAL` factor are never scaled (the latter is a global multiplier, not a
+  contribution owned by a single piece).
+* The mod ships no client-side code of its own; the client mirrors whatever the server computes.
 
 ## Build
 
