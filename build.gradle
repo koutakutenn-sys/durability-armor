@@ -1,0 +1,73 @@
+plugins {
+    id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+version = project.mod_version
+group = 'dev.durabilityarmor'
+base { archivesName = 'durability-armor' }
+repositories {
+    mavenCentral()
+}
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+}
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') { expand(version: project.version) }
+}
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(25)
+    withSourcesJar()
+}
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+    options.encoding = 'UTF-8'
+}
+jar { from('LICENSE') }
+
+// Separate test mod: never included in the distributable jar.
+sourceSets {
+    integrationTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+    }
+}
+configurations {
+    integrationTestImplementation.extendsFrom implementation
+    integrationTestRuntimeOnly.extendsFrom runtimeOnly
+}
+loom {
+    mods {
+        durability_armor { sourceSet sourceSets.main }
+        durability_armor_test { sourceSet sourceSets.integrationTest }
+    }
+    runs {
+        integrationTest {
+            server()
+            name 'Durability Armor Integration Tests'
+            source sourceSets.integrationTest
+            runDir 'run-test'
+            vmArg '-Dmixin.debug.countInjections=true'
+        }
+    }
+}
+tasks.named('runIntegrationTest') {
+    doFirst {
+        mkdir 'run-test'
+        copy {
+            from 'test-server.properties'
+            into 'run-test'
+            rename { 'server.properties' }
+        }
+        if (providers.gradleProperty('acceptMinecraftEula').orNull == 'true') {
+            file('run-test/eula.txt').text = 'eula=true\n'
+        }
+        delete file('run-test/test-result.txt')
+    }
+    doLast {
+        def result = file('run-test/test-result.txt')
+        if (!result.exists() || !result.text.startsWith('PASS')) {
+            throw new GradleException('Integration tests did not pass; inspect run-test/logs/latest.log')
+        }
+    }
+}

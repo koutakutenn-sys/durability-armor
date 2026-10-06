@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "durability_armor",
+  "version": "${version}",
+  "name": "Durability Armor",
+  "description": "Armor protection scales with the remaining durability of each equipped armor piece.",
+  "environment": "*",
+  "license": "MIT",
+  "entrypoints": {
+    "main": ["dev.durabilityarmor.DurabilityArmor"]
+  },
+  "mixins": ["durability_armor.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "26.2",
+    "java": ">=25"
+  }
+}
