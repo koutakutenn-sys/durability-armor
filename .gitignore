@@ -8,3 +8,7 @@ run-test/
 # 面向维护者的本地文档，不随仓库分发
 MAINTAINING.md
 AGENTS.md
+
+# 内部审计与审查记录，不随仓库分发
+docs/compat-audit.md
+docs/code-review.md
