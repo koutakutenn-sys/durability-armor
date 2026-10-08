@@ -2,6 +2,7 @@ package dev.durabilityarmor.test;
 
 import dev.durabilityarmor.ArmorDurabilityScaling;
 import dev.durabilityarmor.DurabilityArmor;
+import dev.durabilityarmor.WornArmorTooltip;
 
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderSet;
@@ -10,6 +11,7 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
@@ -27,9 +29,12 @@ import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.monster.zombie.Zombie;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.TooltipFlag;
 import net.minecraft.world.item.component.ItemAttributeModifiers;
+import net.minecraft.world.item.component.TooltipDisplay;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
 import net.minecraft.world.item.enchantment.ItemEnchantments;
@@ -49,6 +54,7 @@ import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -114,6 +120,7 @@ public final class DurabilityArmorIntegrationTests {
             section("G4 id based removal", () -> idRemovalChecks(server.overworld()));
             section("P1-2 operation aware scaling", () -> operationAwareScalingChecks(server.overworld()));
             section("GAP-A enchantment dispatch", () -> enchantmentDispatchChecks(server.overworld()));
+            section("T1 tooltip wear lines", () -> tooltipChecks(server.overworld()));
         } catch (Throwable fatal) {
             FAILURES.add("fatal: " + fatal);
             REPORT.append("FAILED fatal: ").append(fatal).append('\n');
@@ -1463,6 +1470,161 @@ public final class DurabilityArmorIntegrationTests {
                 HolderSet.empty(),
                 effects);
         return Holder.direct(enchantment);
+    }
+
+    // ------------------------------------------------------------------ T1 tooltip wear lines
+
+    /**
+     * The player-visible contract for the wear tooltip, checked through the real vanilla pipeline
+     * ({@code ItemStack#getTooltipLines} → {@code addDetailsToTooltip} → {@code addAttributeTooltips},
+     * which is where the mixin injects).
+     *
+     * <p>Assertions are language independent on purpose: a dedicated server does not resolve a mod's
+     * own lang entries, so the checks compare translation keys and structured components (which carry
+     * the vanilla red style) rather than rendered text. The shipped lang files are validated
+     * separately, including their resource path.</p>
+     */
+    private static void tooltipChecks(ServerLevel level) {
+        // --- pristine: nothing lost, so nothing extra on the tooltip ------------------------------
+        ItemStack pristine = new ItemStack(Items.DIAMOND_CHESTPLATE);
+        double[] pristineLoss = WornArmorTooltip.losses(pristine);
+        require(pristineLoss[WornArmorTooltip.LOSS_ARMOR] == 0.0
+                        && pristineLoss[WornArmorTooltip.LOSS_TOUGHNESS] == 0.0
+                        && pristineLoss[WornArmorTooltip.LOSS_KNOCKBACK_RESISTANCE] == 0.0,
+                "T1 pristine chestplate reports no wear loss at all");
+        require(!containsWearLine(tooltipLines(level, pristine)),
+                "T1 pristine chestplate adds no wear line to the rendered tooltip");
+
+        // --- worn: the reported loss must equal raw * (1 - multiplier) ----------------------------
+        ItemStack worn = damaged(Items.DIAMOND_CHESTPLATE, 0.5);
+        double multiplier = ArmorDurabilityScaling.multiplier(worn);
+        require(multiplier < 1.0, "T1 fixture: the worn chestplate is damaged");
+        double rawArmor = raw(worn, EquipmentSlot.CHEST, Attributes.ARMOR).addValue();
+        double rawToughness = raw(worn, EquipmentSlot.CHEST, Attributes.ARMOR_TOUGHNESS).addValue();
+        require(rawArmor > 0.0 && rawToughness > 0.0,
+                "T1 fixture: a diamond chestplate grants both armor and armor toughness");
+
+        double[] lost = WornArmorTooltip.losses(worn);
+        require(near(lost[WornArmorTooltip.LOSS_ARMOR], rawArmor * (1.0 - multiplier)),
+                "T1 reported lost armor == raw armor * (1 - multiplier)");
+        require(near(lost[WornArmorTooltip.LOSS_TOUGHNESS], rawToughness * (1.0 - multiplier)),
+                "T1 reported lost armor toughness == raw toughness * (1 - multiplier)");
+        require(lost[WornArmorTooltip.LOSS_ARMOR] > 0.0 && lost[WornArmorTooltip.LOSS_TOUGHNESS] > 0.0,
+                "T1 fixture: both losses are non-zero, so the two lines are really distinguishable");
+
+        List<Component> wornLines = tooltipLines(level, worn);
+        Component expectedArmor =
+                WornArmorTooltip.line(WornArmorTooltip.WORN_ARMOR_KEY, lost[WornArmorTooltip.LOSS_ARMOR]);
+        Component expectedToughness =
+                WornArmorTooltip.line(WornArmorTooltip.WORN_TOUGHNESS_KEY, lost[WornArmorTooltip.LOSS_TOUGHNESS]);
+        require(wornLines.contains(expectedArmor),
+                "T1 the rendered tooltip carries the armor wear line (same key and red style)");
+        require(wornLines.contains(expectedToughness),
+                "T1 the rendered tooltip carries the armor toughness wear line");
+        require(WornArmorTooltip.WORN_ARMOR_KEY.equals(translationKeyOf(expectedArmor))
+                        && !WornArmorTooltip.WORN_ARMOR_KEY.startsWith("attribute.modifier"),
+                "T1 the wear line is its own line, not vanilla's +N attribute line");
+
+        int firstAttributeLine = -1;
+        for (int i = 0; i < wornLines.size(); i++) {
+            String key = translationKeyOf(wornLines.get(i));
+            if (key != null && key.startsWith("attribute.modifier")) {
+                firstAttributeLine = i;
+                break;
+            }
+        }
+        int armorWearIndex = wornLines.indexOf(expectedArmor);
+        int toughnessWearIndex = wornLines.indexOf(expectedToughness);
+        require(firstAttributeLine >= 0, "T1 fixture: the vanilla attribute line is present in the tooltip");
+        require(armorWearIndex > firstAttributeLine && toughnessWearIndex > firstAttributeLine,
+                "T1 both wear lines sit below the vanilla attribute lines");
+        require(toughnessWearIndex > armorWearIndex,
+                "T1 the toughness wear line follows the armor wear line");
+
+        // --- knockback resistance is deliberately not scaled (requirement 2) -> no line -----------
+        ItemStack knockback = damaged(Items.DIAMOND_CHESTPLATE, 0.5);
+        ItemAttributeModifiers withKnockback = knockback
+                .getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY)
+                .withModifierAdded(Attributes.KNOCKBACK_RESISTANCE,
+                        new AttributeModifier(Identifier.fromNamespaceAndPath(TEST_NAMESPACE, "kbr_probe"),
+                                0.25, AttributeModifier.Operation.ADD_VALUE),
+                        EquipmentSlotGroup.ANY);
+        knockback.set(DataComponents.ATTRIBUTE_MODIFIERS, withKnockback);
+        require(raw(knockback, EquipmentSlot.CHEST, Attributes.KNOCKBACK_RESISTANCE).addValue() == 0.25,
+                "T1 fixture: the knockback resistance contribution is really 0.25");
+        double[] knockbackLoss = WornArmorTooltip.losses(knockback);
+        require(knockbackLoss[WornArmorTooltip.LOSS_KNOCKBACK_RESISTANCE] == 0.0,
+                "T1 knockback resistance is not scaled, so it reports no loss (requirement 2)");
+        require(!tooltipLines(level, knockback).contains(
+                        WornArmorTooltip.line(WornArmorTooltip.WORN_KNOCKBACK_KEY, 0.25)),
+                "T1 no knockback wear line is printed while knockback resistance stays unscaled");
+
+        // --- a damaged non-armor item must stay quiet ---------------------------------------------
+        ItemStack sword = damaged(Items.DIAMOND_SWORD, 0.5);
+        double[] swordLoss = WornArmorTooltip.losses(sword);
+        require(swordLoss[WornArmorTooltip.LOSS_ARMOR] == 0.0
+                        && swordLoss[WornArmorTooltip.LOSS_TOUGHNESS] == 0.0
+                        && swordLoss[WornArmorTooltip.LOSS_KNOCKBACK_RESISTANCE] == 0.0,
+                "T1 a damaged non-armor item reports no wear loss");
+        require(!containsWearLine(tooltipLines(level, sword)),
+                "T1 a damaged non-armor item adds no wear line");
+
+        // --- hiding the vanilla attribute lines must hide ours too ---------------------------------
+        ItemStack hidden = damaged(Items.DIAMOND_CHESTPLATE, 0.5);
+        hidden.set(DataComponents.TOOLTIP_DISPLAY,
+                TooltipDisplay.DEFAULT.withHidden(DataComponents.ATTRIBUTE_MODIFIERS, true));
+        require(!containsWearLine(tooltipLines(level, hidden)),
+                "T1 hiding the attribute lines in TooltipDisplay also hides the wear line");
+
+        // --- the shipped lang files must sit on the path the client loads --------------------------
+        String en = langFile("en_us.json");
+        String zh = langFile("zh_cn.json");
+        for (String key : List.of(WornArmorTooltip.WORN_ARMOR_KEY, WornArmorTooltip.WORN_TOUGHNESS_KEY,
+                WornArmorTooltip.WORN_KNOCKBACK_KEY)) {
+            require(en.contains("\"" + key + "\"") && en.contains("-%s"),
+                    "T1 en_us.json declares " + key + " with a -%s placeholder");
+            require(zh.contains("\"" + key + "\""),
+                    "T1 zh_cn.json declares " + key);
+        }
+        require(zh.contains("耐久损耗：-%s 护甲值"),
+                "T1 zh_cn armor line reads 耐久损耗：-<n> 护甲值");
+        require(zh.contains("耐久损耗：-%s 盔甲韧性"),
+                "T1 zh_cn toughness line uses the vanilla term 盔甲韧性");
+        require(zh.contains("耐久损耗：-%s 击退抗性"),
+                "T1 zh_cn knockback line uses the vanilla term 击退抗性");
+        require(en.contains("Wear: -%s Armor"),
+                "T1 en_us armor line reads Wear: -<n> Armor");
+    }
+
+    /** The tooltip a player would see, rendered through the real vanilla chain. */
+    private static List<Component> tooltipLines(ServerLevel level, ItemStack stack) {
+        return stack.getTooltipLines(Item.TooltipContext.of(level), null, TooltipFlag.NORMAL);
+    }
+
+    private static boolean containsWearLine(List<Component> lines) {
+        return lines.stream().anyMatch(line -> {
+            String key = translationKeyOf(line);
+            return key != null && key.startsWith("tooltip.durability_armor.");
+        });
+    }
+
+    private static String translationKeyOf(Component component) {
+        if (component == null) {
+            return null;
+        }
+        return component.getContents() instanceof TranslatableContents translatable ? translatable.getKey() : null;
+    }
+
+    private static String langFile(String name) {
+        String path = "assets/durability_armor/lang/" + name;
+        try (InputStream in = DurabilityArmorIntegrationTests.class.getClassLoader().getResourceAsStream(path)) {
+            if (in == null) {
+                throw new IllegalStateException("missing resource " + path);
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (Exception error) {
+            throw new IllegalStateException("could not read " + path, error);
+        }
     }
 
     // ------------------------------------------------------------------ helpers

@@ -88,6 +88,24 @@ Why this is the right funnel (and why the alternatives were rejected):
 value refreshes on the tick after a piece takes damage. Document the ≤1 tick lag; do not add extra
 refresh machinery without Lead approval (it would change behaviour and risk).
 
+### 3.1 Player-visible wear tooltip (added 2026-10-08)
+
+A second, separate hook makes the loss visible to the player:
+`ItemStackTooltipMixin` injects at the `TAIL` of the private
+`ItemStack#addAttributeTooltips(Consumer, TooltipDisplay, Player)` and appends red lines below the
+piece's own attribute lines. That method is the one vanilla uses to print `+N Armor` /
+`+N Armor Toughness`, and it starts with a `TooltipDisplay#shows(DataComponents.ATTRIBUTE_MODIFIERS)`
+guard whose early `return` means our `TAIL` injection also stays away when the attribute lines are
+hidden — no extra `TooltipDisplay` handling is needed.
+
+The reported number is deliberately **not** recomputed with a second formula. For every entry of the
+stack's own attribute component it is measured against the runtime path:
+`lost = modifier.amount() - ArmorDurabilityScaling.scale(stack, attribute, modifier).amount()`.
+Anything the scaling leaves alone therefore reports exactly `0` and prints no line, which is why
+knockback resistance shows nothing (it is never scaled) while the mechanism already supports it. The
+amounts use vanilla's `ItemAttributeModifiers.ATTRIBUTE_MODIFIER_FORMAT` and `ChatFormatting.RED`, so
+they line up with the blue vanilla lines above.
+
 ## 4. Frozen contract (names other agents may rely on)
 
 | Item | Value |
@@ -99,6 +117,7 @@ refresh machinery without Lead approval (it would change behaviour and risk).
 | mixin config | `src/main/resources/durability_armor.mixins.json`, package `dev.durabilityarmor.mixin`, mixins `["ItemStackMixin"]`, compatibilityLevel `JAVA_25` |
 | **required mixin class** | `dev.durabilityarmor.mixin.ItemStackMixin` |
 | **required API class** | `dev.durabilityarmor.ArmorDurabilityScaling` |
+| **required tooltip class** | `dev.durabilityarmor.WornArmorTooltip` (losses / appendTo / line) |
 | version | `gradle.properties` → `mod_version=1.0.0+mc26.2` |
 
 `ArmorDurabilityScaling` public API (used by the mixin and by the integration tests):
@@ -170,8 +189,14 @@ authoritative build; teammates must coordinate (see the shared task board) befor
 
 ## 7. Known limitations to document honestly
 
-* Tooltips still print the item's own attribute component values (unchanged by design: the item's
-  base attributes are never modified). The HUD armor bar and damage reduction use the scaled value.
+* The tooltip prints the item's own attribute component values in vanilla's blue `+N` lines (that
+  component is never edited) and adds red `Wear: -N Armor` / `Wear: -N Armor Toughness` lines below
+  them for the part that piece has lost to durability. The numbers come from the same `scale` call the
+  runtime uses, so the tooltip cannot disagree with the live value; a pristine piece adds nothing, and
+  hiding the attribute lines through `TooltipDisplay` hides these lines too. Knockback resistance is
+  never scaled and therefore never reports a loss — the mechanism (`LOSS_KNOCKBACK_RESISTANCE`, the
+  `worn_knockback_resistance` lang key) exists so that it would report one automatically if that ever
+  changed.
 * A durability change is picked up on the next tick (vanilla equipment-change detection cadence).
 * Armor points/toughness granted by a source that does not go through
   `ItemStack.forEachModifier` (e.g. a mod that injects straight into an `AttributeInstance`) are not

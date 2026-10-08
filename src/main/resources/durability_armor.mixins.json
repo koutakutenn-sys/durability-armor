@@ -2,6 +2,6 @@
   "required": true,
   "package": "dev.durabilityarmor.mixin",
   "compatibilityLevel": "JAVA_25",
-  "mixins": ["ItemStackMixin"],
+  "mixins": ["ItemStackMixin", "ItemStackTooltipMixin"],
   "injectors": { "defaultRequire": 1 }
 }

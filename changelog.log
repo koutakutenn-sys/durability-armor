@@ -2,6 +2,11 @@
 - Armor value and armor toughness of every equipped piece now scale with that piece's remaining
   durability using multiplier = 1 - (1 - r)^2, where r = remaining / max durability.
 - Knockback resistance is unaffected.
+- Tooltips now show the loss: below the vanilla blue `+N Armor` / `+N Armor Toughness` lines, red
+  `Wear: -N Armor` / `Wear: -N Armor Toughness` lines report what the piece has already lost to
+  durability (zh_cn: `耐久损耗：-N 护甲值` / `耐久损耗：-N 盔甲韧性`). A pristine piece adds nothing;
+  hiding the attribute lines hides these lines too; the numbers are derived from the same scaling the
+  runtime applies, so they cannot disagree with the live value.
 - Additive attribute modifiers (ADD_VALUE, ADD_MULTIPLIED_BASE) are scaled; ADD_MULTIPLIED_TOTAL
   modifiers are left unchanged, so a piece's final contribution is exactly `original value ×
   multiplier` for the vanilla `(base + Σ add) · (1 + Σ total)` formula.

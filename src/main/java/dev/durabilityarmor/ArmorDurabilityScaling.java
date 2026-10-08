@@ -70,23 +70,40 @@ public final class ArmorDurabilityScaling {
         return 1.0 - deficit * deficit;
     }
 
+    /** True only for {@link Attributes#ARMOR}. */
+    public static boolean isArmor(Holder<Attribute> attribute) {
+        return sameAttribute(attribute, Attributes.ARMOR);
+    }
+
+    /** True only for {@link Attributes#ARMOR_TOUGHNESS}. */
+    public static boolean isArmorToughness(Holder<Attribute> attribute) {
+        return sameAttribute(attribute, Attributes.ARMOR_TOUGHNESS);
+    }
+
     /**
      * True only for {@link Attributes#ARMOR} and {@link Attributes#ARMOR_TOUGHNESS}. Knockback
      * resistance (and every other attribute) is deliberately left untouched.
      */
     public static boolean scalesAttribute(Holder<Attribute> attribute) {
-        if (attribute == null) {
+        return isArmor(attribute) || isArmorToughness(attribute);
+    }
+
+    /**
+     * Identity comparison that also accepts a different {@link Holder} wrapping the very same
+     * {@link Attribute} instance. The resolving path is wrapped defensively so a holder that cannot
+     * resolve its value can never throw out of here.
+     */
+    public static boolean sameAttribute(Holder<Attribute> attribute, Holder<Attribute> expected) {
+        if (attribute == null || expected == null) {
             return false;
         }
         // Fast path: the canonical registry holders are what item attribute components carry.
-        if (attribute == Attributes.ARMOR || attribute == Attributes.ARMOR_TOUGHNESS) {
+        if (attribute == expected) {
             return true;
         }
-        // Robust path: any other Holder wrapping the very same Attribute instance still counts.
-        // Wrapped defensively so a Holder that cannot resolve its value can never throw out of here.
+        // Robust path: any other Holder wrapping the same Attribute instance still counts.
         try {
-            Attribute value = attribute.value();
-            return value == Attributes.ARMOR.value() || value == Attributes.ARMOR_TOUGHNESS.value();
+            return attribute.value() == expected.value();
         } catch (RuntimeException ignored) {
             return false;
         }

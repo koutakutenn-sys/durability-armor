@@ -1,0 +1,5 @@
+{
+  "tooltip.durability_armor.worn_armor": "Wear: -%s Armor",
+  "tooltip.durability_armor.worn_toughness": "Wear: -%s Armor Toughness",
+  "tooltip.durability_armor.worn_knockback_resistance": "Wear: -%s Knockback Resistance"
+}

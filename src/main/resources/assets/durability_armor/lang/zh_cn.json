@@ -1,0 +1,5 @@
+{
+  "tooltip.durability_armor.worn_armor": "耐久损耗：-%s 护甲值",
+  "tooltip.durability_armor.worn_toughness": "耐久损耗：-%s 盔甲韧性",
+  "tooltip.durability_armor.worn_knockback_resistance": "耐久损耗：-%s 击退抗性"
+}

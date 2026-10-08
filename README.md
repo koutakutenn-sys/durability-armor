@@ -57,13 +57,26 @@ Damage reduction, the HUD armor bar and anything else that reads `Attributes.ARM
 * Vanilla re-applies equipment attribute modifiers on the tick after a piece's durability changes,
   so a hit that damages your armor is still reduced with the previous tick's value. From the next
   tick on, the reduced protection is in effect.
-* Item tooltips keep printing the item's own attribute values (they are unchanged by design). The
-  HUD armor bar and the actual damage reduction are the scaled ones.
+* The item's own attribute lines in the tooltip are untouched (the item component is never edited).
+  Below them the mod adds red lines reporting what that piece has already lost to durability:
+
+  ```
+  +8 Armor
+  +2 Armor Toughness
+  Wear: -2 Armor
+  Wear: -0.5 Armor Toughness
+  ```
+
+  A pristine piece adds nothing, and hiding the attribute lines with the vanilla tooltip-display
+  setting hides these lines too. The numbers are measured against the very scaling the runtime
+  applies, so the tooltip and the live value cannot disagree.
 * Armor points injected directly into an `AttributeInstance` by another mod, bypassing the standard
   item attribute component, are not scaled. Likewise an attribute's **base value** and any
   `ADD_MULTIPLIED_TOTAL` factor are never scaled (the latter is a global multiplier, not a
   contribution owned by a single piece).
-* The mod ships no client-side code of its own; the client mirrors whatever the server computes.
+* The mod ships no client-specific code: the tooltip hook targets `ItemStack`, a common class, and the
+  protection value itself is still computed server-side and mirrored to the client. Knockback
+  resistance is deliberately never scaled, so it never prints a `Wear:` line.
 
 ## Build
 
